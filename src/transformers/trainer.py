@@ -32,7 +32,7 @@ import tempfile
 import time
 import warnings
 from collections.abc import Mapping
-from pathlib import Path
+from pathlib import Path/
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
 
@@ -2174,7 +2174,6 @@ class Trainer:
                 rng_to_sync = True
 
             step = -1
-            import pdb; pdb.set_trace()
             for step, inputs in enumerate(epoch_iterator):
                 total_batched_samples += 1
 
@@ -3148,26 +3147,29 @@ class Trainer:
         Return:
             `torch.Tensor`: The tensor with training loss on this batch.
         """
-        model.train()
+        model.eval()
         inputs = self._prepare_inputs(inputs)
 
         if is_sagemaker_mp_enabled():
             loss_mb = smp_forward_backward(model, inputs, self.args.gradient_accumulation_steps)
             return loss_mb.reduce_mean().detach().to(self.args.device)
 
-        with self.compute_loss_context_manager():
-            loss = self.compute_loss(model, inputs)
+        with torch.no_grad():
+            _ = model(**inputs)
+            return 1
+        # with self.compute_loss_context_manager():
+        #     loss = self.compute_loss(model, inputs)
 
-        if self.args.n_gpu > 1:
-            loss = loss.mean()  # mean() to average on multi-gpu parallel training
+        # if self.args.n_gpu > 1:
+        #     loss = loss.mean()  # mean() to average on multi-gpu parallel training
 
-        if self.use_apex:
-            with amp.scale_loss(loss, self.optimizer) as scaled_loss:
-                scaled_loss.backward()
-        else:
-            self.accelerator.backward(loss)
+        # if self.use_apex:
+        #     with amp.scale_loss(loss, self.optimizer) as scaled_loss:
+        #         scaled_loss.backward()
+        # else:
+        #     self.accelerator.backward(loss)
 
-        return loss.detach() / self.args.gradient_accumulation_steps
+        # return loss.detach() / self.args.gradient_accumulation_steps
 
     def compute_loss(self, model, inputs, return_outputs=False):
         """
