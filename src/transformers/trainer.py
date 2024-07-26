@@ -32,7 +32,7 @@ import tempfile
 import time
 import warnings
 from collections.abc import Mapping
-from pathlib import Path/
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
 
