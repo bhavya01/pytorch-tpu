@@ -172,9 +172,6 @@ if is_in_notebook():
 
     DEFAULT_PROGRESS_CALLBACK = NotebookProgressCallback
 
-if is_apex_available():
-    from apex import amp
-
 if is_datasets_available():
     import datasets
 
@@ -388,10 +385,6 @@ class Trainer:
 
         self.create_accelerator_and_postprocess()
 
-        # memory metrics - must set up as early as possible
-        self._memory_tracker = TrainerMemoryTracker(self.args.skip_memory_metrics)
-        self._memory_tracker.start()
-
         # set the correct log level depending on the node
         log_level = args.get_process_log_level()
         logging.set_verbosity(log_level)
@@ -522,8 +515,6 @@ class Trainer:
         self.model_wrapped = model
         self.model = model
 
-        self.neftune_noise_alpha = args.neftune_noise_alpha
-
         self.compute_metrics = compute_metrics
         self.preprocess_logits_for_metrics = preprocess_logits_for_metrics
         self.optimizer, self.lr_scheduler = optimizers
@@ -592,53 +583,6 @@ class Trainer:
 
         self._signature_columns = None
 
-        # Mixed precision setup
-        self.use_apex = False
-        self.use_cpu_amp = False
-
-        # Mixed precision setup for SageMaker Model Parallel
-        if is_sagemaker_mp_enabled():
-            # BF16 + model parallelism in SageMaker: currently not supported, raise an error
-            if args.bf16:
-                raise ValueError("SageMaker Model Parallelism does not support BF16 yet. Please use FP16 instead ")
-
-            if IS_SAGEMAKER_MP_POST_1_10:
-                # When there's mismatch between SMP config and trainer argument, use SMP config as truth
-                if args.fp16 != smp.state.cfg.fp16:
-                    logger.warning(
-                        f"FP16 provided in SM_HP_MP_PARAMETERS is {smp.state.cfg.fp16}, "
-                        f"but FP16 provided in trainer argument is {args.fp16}, "
-                        f"setting to {smp.state.cfg.fp16}"
-                    )
-                    args.fp16 = smp.state.cfg.fp16
-            else:
-                # smp < 1.10 does not support fp16 in trainer.
-                if hasattr(smp.state.cfg, "fp16"):
-                    logger.warning(
-                        f"FP16 provided in SM_HP_MP_PARAMETERS is {smp.state.cfg.fp16}, "
-                        "but SageMaker Model Parallelism < 1.10 does not support FP16 in trainer."
-                    )
-        if (args.fp16 or args.bf16) and args.half_precision_backend == "auto":
-            if args.device == torch.device("cpu"):
-                if args.fp16:
-                    raise ValueError("Tried to use `fp16` but it is not supported on cpu")
-                else:
-                    args.half_precision_backend = "cpu_amp"
-            logger.info(f"Using {args.half_precision_backend} half precision backend")
-
-        if (args.fp16 or args.bf16) and not (self.is_deepspeed_enabled or is_sagemaker_mp_enabled()):
-            # deepspeed and SageMaker Model Parallel manage their own half precision
-            if args.half_precision_backend == "cpu_amp":
-                self.use_cpu_amp = True
-                self.amp_dtype = torch.bfloat16
-            elif args.half_precision_backend == "apex":
-                if not is_apex_available():
-                    raise ImportError(
-                        "Using FP16 with APEX but APEX is not installed, please refer to"
-                        " https://www.github.com/nvidia/apex."
-                    )
-                self.use_apex = True
-
         # Label smoothing
         if self.args.label_smoothing_factor != 0:
             self.label_smoother = LabelSmoother(epsilon=self.args.label_smoothing_factor)
@@ -664,8 +608,6 @@ class Trainer:
         self._train_batch_size = args.train_batch_size
         self._created_lr_scheduler = False
 
-        # very last
-        self._memory_tracker.stop_and_update_metrics()
 
         # torch.compile
         if args.torch_compile and not is_torch_compile_available():
@@ -679,42 +621,6 @@ class Trainer:
             # Tensor axis is just a placeholder where it will not be used in FSDPv2.
             num_devices = xr.global_runtime_device_count()
             xs.set_global_mesh(xs.Mesh(np.array(range(num_devices)), (num_devices, 1), axis_names=("fsdp", "tensor")))
-
-    def _activate_neftune(self, model):
-        r"""
-        Activates the neftune as presented in this code: https://github.com/neelsjain/NEFTune and paper:
-        https://arxiv.org/abs/2310.05914
-        """
-        unwrapped_model = unwrap_model(model)
-
-        if _is_peft_model(unwrapped_model):
-            embeddings = unwrapped_model.base_model.model.get_input_embeddings()
-        else:
-            embeddings = unwrapped_model.get_input_embeddings()
-
-        del unwrapped_model
-
-        embeddings.neftune_noise_alpha = self.neftune_noise_alpha
-        hook_handle = embeddings.register_forward_hook(neftune_post_forward_hook)
-        self.neftune_hook_handle = hook_handle
-        return model
-
-    def _deactivate_neftune(self, model):
-        """
-        Deactivates the neftune method. Make sure to call `_activate_neftune` first.
-        """
-        if not hasattr(self, "neftune_hook_handle"):
-            raise ValueError("Neftune is not activated make sure to call `trainer._activate_neftune()` first")
-
-        unwrapped_model = unwrap_model(model)
-
-        if _is_peft_model(unwrapped_model):
-            embeddings = unwrapped_model.base_model.model.get_input_embeddings()
-        else:
-            embeddings = unwrapped_model.get_input_embeddings()
-
-        self.neftune_hook_handle.remove()
-        del embeddings.neftune_noise_alpha, unwrapped_model
 
     def add_callback(self, callback):
         """
@@ -1549,32 +1455,8 @@ class Trainer:
                     jit_model(**example_batch)
                     jit_model(**example_batch)
                 model = jit_model
-                self.use_cpu_amp = False
             except (RuntimeError, TypeError, ValueError, NameError, IndexError) as e:
                 logger.warning(f"failed to use PyTorch jit mode due to: {e}.")
-
-        return model
-
-    def ipex_optimize_model(self, model, training=False, dtype=torch.float32):
-        if not is_ipex_available():
-            raise ImportError(
-                "Using IPEX but IPEX is not installed or IPEX's version does not match current PyTorch, please refer"
-                " to https://github.com/intel/intel-extension-for-pytorch."
-            )
-
-        import intel_extension_for_pytorch as ipex
-
-        if not training:
-            model.eval()
-            dtype = torch.bfloat16 if not self.is_in_train and self.args.bf16_full_eval else dtype
-            # conv_bn_folding is disabled as it fails in symbolic tracing, resulting in ipex warnings
-            model = ipex.optimize(model, dtype=dtype, level="O1", conv_bn_folding=False, inplace=not self.is_in_train)
-        else:
-            if not model.training:
-                model.train()
-            model, self.optimizer = ipex.optimize(
-                model, dtype=dtype, optimizer=self.optimizer, inplace=True, level="O1"
-            )
 
         return model
 
@@ -1607,28 +1489,11 @@ class Trainer:
             logger.warning_once(warning_str)
 
     def _wrap_model(self, model, training=True, dataloader=None):
-        if self.args.use_ipex:
-            dtype = torch.bfloat16 if self.use_cpu_amp else torch.float32
-            model = self.ipex_optimize_model(model, training, dtype=dtype)
-
-        if is_sagemaker_mp_enabled():
-            # Wrapping the base model twice in a DistributedModel will raise an error.
-            if isinstance(self.model_wrapped, smp.model.DistributedModel):
-                return self.model_wrapped
-            return smp.DistributedModel(model, backward_passes_per_step=self.args.gradient_accumulation_steps)
-
         # train/eval could be run multiple-times - if already wrapped, don't re-wrap it again
         if unwrap_model(model) is not model:
             return model
 
-        # Mixed precision training with apex (torch < 1.6)
-        if self.use_apex and training:
-            model, self.optimizer = amp.initialize(model, self.optimizer, opt_level=self.args.fp16_opt_level)
-
-        # Multi-gpu training (should be after apex fp16 initialization) / 8bit models does not support DDP
-        if self.args.n_gpu > 1 and not getattr(model, "is_loaded_in_8bit", False):
-            model = nn.DataParallel(model)
-
+        
         if self.args.jit_mode_eval:
             start_time = time.time()
             model = self.torch_jit_model_eval(model, dataloader, training)
@@ -1787,114 +1652,35 @@ class Trainer:
         if resume_from_checkpoint is False:
             resume_from_checkpoint = None
 
-        # memory metrics - must set up as early as possible
-        self._memory_tracker.start()
-
         args = self.args
 
         self.is_in_train = True
 
-        # Attach NEFTune hooks if necessary
-        if self.neftune_noise_alpha is not None:
-            self.model = self._activate_neftune(self.model)
-
-        # do_train is not a reliable argument, as it might not be set and .train() still called, so
-        # the following is a workaround:
-        if (args.fp16_full_eval or args.bf16_full_eval) and not args.do_train:
-            self._move_model_to_device(self.model, args.device)
-
-        if "model_path" in kwargs:
-            resume_from_checkpoint = kwargs.pop("model_path")
-            warnings.warn(
-                "`model_path` is deprecated and will be removed in a future version. Use `resume_from_checkpoint` "
-                "instead.",
-                FutureWarning,
-            )
         if len(kwargs) > 0:
             raise TypeError(f"train() received got unexpected keyword arguments: {', '.join(list(kwargs.keys()))}.")
         # This might change the seed so needs to run first.
         self._hp_search_setup(trial)
         self._train_batch_size = self.args.train_batch_size
-
-        # Model re-init
-        model_reloaded = False
-        if self.model_init is not None:
-            # Seed must be set before instantiating the model when using model_init.
-            enable_full_determinism(self.args.seed) if self.args.full_determinism else set_seed(self.args.seed)
-            self.model = self.call_model_init(trial)
-            model_reloaded = True
-            # Reinitializes optimizer and scheduler
-            self.optimizer, self.lr_scheduler = None, None
-
-        # Load potential model checkpoint
-        if isinstance(resume_from_checkpoint, bool) and resume_from_checkpoint:
-            resume_from_checkpoint = get_last_checkpoint(args.output_dir)
-            if resume_from_checkpoint is None:
-                raise ValueError(f"No valid checkpoint found in output directory ({args.output_dir})")
-
-        if resume_from_checkpoint is not None:
-            if not is_sagemaker_mp_enabled() and not self.is_deepspeed_enabled and not self.is_fsdp_enabled:
-                self._load_from_checkpoint(resume_from_checkpoint)
-            # In case of repeating the find_executable_batch_size, set `self._train_batch_size` properly
-            state = TrainerState.load_from_json(os.path.join(resume_from_checkpoint, TRAINER_STATE_NAME))
-            if state.train_batch_size is not None:
-                self._train_batch_size = state.train_batch_size
-
-        # If model was re-initialized, put it on the right device and update self.model_wrapped
-        if model_reloaded:
-            if self.place_model_on_device:
-                self._move_model_to_device(self.model, args.device)
-            self.model_wrapped = self.model
-
-        inner_training_loop = find_executable_batch_size(
-            self._inner_training_loop, self._train_batch_size, args.auto_find_batch_size
+        
+        return self._inner_training_loop(
+            batch_size=self._train_batch_size,
+            args=args,
+            resume_from_checkpoint=resume_from_checkpoint,
+            trial=trial,
+            ignore_keys_for_eval=ignore_keys_for_eval,
         )
-        if args.push_to_hub:
-            try:
-                # Disable progress bars when uploading models during checkpoints to avoid polluting stdout
-                hf_hub_utils.disable_progress_bars()
-                return inner_training_loop(
-                    args=args,
-                    resume_from_checkpoint=resume_from_checkpoint,
-                    trial=trial,
-                    ignore_keys_for_eval=ignore_keys_for_eval,
-                )
-            finally:
-                hf_hub_utils.enable_progress_bars()
-        else:
-            return inner_training_loop(
-                args=args,
-                resume_from_checkpoint=resume_from_checkpoint,
-                trial=trial,
-                ignore_keys_for_eval=ignore_keys_for_eval,
-            )
 
     def _inner_training_loop(
         self, batch_size=None, args=None, resume_from_checkpoint=None, trial=None, ignore_keys_for_eval=None
     ):
         self.accelerator.free_memory()
         self._train_batch_size = batch_size
-        if self.args.auto_find_batch_size:
-            if self.state.train_batch_size != self._train_batch_size:
-                from accelerate.utils import release_memory
-
-                (self.model_wrapped,) = release_memory(self.model_wrapped)
-                self.model_wrapped = self.model
-
-                # Check for DeepSpeed *after* the intial pass and modify the config
-                if self.is_deepspeed_enabled:
-                    # Temporarily unset `self.args.train_batch_size`
-                    original_bs = self.args.per_device_train_batch_size
-                    self.args.per_device_train_batch_size = self._train_batch_size // max(1, self.args.n_gpu)
-                    self.propagate_args_to_deepspeed(True)
-                    self.args.per_device_train_batch_size = original_bs
-            self.state.train_batch_size = self._train_batch_size
         logger.debug(f"Currently training with a batch size of: {self._train_batch_size}")
         # Data loader and number of training steps
         train_dataloader = self.get_train_dataloader()
         if self.is_fsdp_xla_v2_enabled:
             train_dataloader = tpu_spmd_dataloader(train_dataloader)
-
+        import pdb; pdb.set_trace()
         # Setting up training control variables:
         # number of training epochs: num_train_epochs
         # number of training steps per epoch: num_update_steps_per_epoch
@@ -2012,10 +1798,7 @@ class Trainer:
         if use_accelerator_prepare:
             self.model.train()
             if hasattr(self.lr_scheduler, "step"):
-                if self.use_apex:
-                    model = self.accelerator.prepare(self.model)
-                else:
-                    model, self.optimizer = self.accelerator.prepare(self.model, self.optimizer)
+                model, self.optimizer = self.accelerator.prepare(self.model, self.optimizer)
             else:
                 # to handle cases wherein we pass "DummyScheduler" such as when it is specified in DeepSpeed config.
                 model, self.optimizer, self.lr_scheduler = self.accelerator.prepare(
@@ -2248,31 +2031,11 @@ class Trainer:
                     # Gradient clipping
                     if args.max_grad_norm is not None and args.max_grad_norm > 0:
                         # deepspeed does its own clipping
-
-                        if is_sagemaker_mp_enabled() and args.fp16:
-                            _grad_norm = self.optimizer.clip_master_grads(args.max_grad_norm)
-                        elif self.use_apex:
-                            # Revert to normal clipping otherwise, handling Apex or full precision
-                            _grad_norm = nn.utils.clip_grad_norm_(
-                                amp.master_params(self.optimizer),
-                                args.max_grad_norm,
-                            )
-                        else:
-                            _grad_norm = self.accelerator.clip_grad_norm_(
-                                model.parameters(),
-                                args.max_grad_norm,
-                            )
-
-                        if (
-                            is_accelerate_available()
-                            and self.accelerator.distributed_type == DistributedType.DEEPSPEED
-                        ):
-                            grad_norm = model.get_global_grad_norm()
-                            # In some cases the grad norm may not return a float
-                            if hasattr(grad_norm, "item"):
-                                grad_norm = grad_norm.item()
-                        else:
-                            grad_norm = _grad_norm
+                        _grad_norm = self.accelerator.clip_grad_norm_(
+                            model.parameters(),
+                            args.max_grad_norm,
+                        )
+                        grad_norm = _grad_norm
 
                     # Optimizer step
                     self.optimizer.step()
@@ -2363,8 +2126,6 @@ class Trainer:
 
         self.is_in_train = False
 
-        self._memory_tracker.stop_and_update_metrics(metrics)
-
         self.log(metrics)
 
         run_dir = self._get_output_dir(trial)
@@ -2381,12 +2142,6 @@ class Trainer:
 
         # Wait for the checkpoint to be uploaded.
         self._finish_current_push()
-
-        # After training we make sure to retrieve back the original forward pass method
-        # for the embedding layer by removing the forward post hook.
-        if self.neftune_noise_alpha is not None:
-            self._deactivate_neftune(self.model)
-
         return TrainOutput(self.state.global_step, train_loss, metrics)
 
     def _get_output_dir(self, trial):
@@ -3122,10 +2877,7 @@ class Trainer:
         A helper wrapper that creates an appropriate context manager for `autocast` while feeding it the desired
         arguments, depending on the situation.
         """
-        if self.use_cpu_amp:
-            ctx_manager = torch.cpu.amp.autocast(cache_enabled=cache_enabled, dtype=self.amp_dtype)
-        else:
-            ctx_manager = contextlib.nullcontext()
+        ctx_manager = contextlib.nullcontext()
 
         return ctx_manager
 
@@ -3160,11 +2912,7 @@ class Trainer:
         if self.args.n_gpu > 1:
             loss = loss.mean()  # mean() to average on multi-gpu parallel training
 
-        if self.use_apex:
-            with amp.scale_loss(loss, self.optimizer) as scaled_loss:
-                scaled_loss.backward()
-        else:
-            self.accelerator.backward(loss)
+        self.accelerator.backward(loss)
 
         return loss.detach() / self.args.gradient_accumulation_steps
 
@@ -3477,9 +3225,6 @@ class Trainer:
                 metrics.update(dataset_metrics)
             return metrics
 
-        # memory metrics - must set up as early as possible
-        self._memory_tracker.start()
-
         eval_dataloader = self.get_eval_dataloader(eval_dataset)
         if self.is_fsdp_xla_v2_enabled:
             eval_dataloader = tpu_spmd_dataloader(eval_dataloader)
@@ -3516,8 +3261,6 @@ class Trainer:
             xm.master_print(met.metrics_report())
 
         self.control = self.callback_handler.on_evaluate(self.args, self.state, self.control, output.metrics)
-
-        self._memory_tracker.stop_and_update_metrics(output.metrics)
 
         return output.metrics
 
@@ -3556,8 +3299,6 @@ class Trainer:
             - metrics (`Dict[str, float]`, *optional*): The potential dictionary of metrics (if the dataset contained
               labels).
         """
-        # memory metrics - must set up as early as possible
-        self._memory_tracker.start()
 
         test_dataloader = self.get_test_dataloader(test_dataset)
         start_time = time.time()
@@ -3579,7 +3320,6 @@ class Trainer:
         )
 
         self.control = self.callback_handler.on_predict(self.args, self.state, self.control, output.metrics)
-        self._memory_tracker.stop_and_update_metrics(output.metrics)
 
         return PredictionOutput(predictions=output.predictions, label_ids=output.label_ids, metrics=output.metrics)
 

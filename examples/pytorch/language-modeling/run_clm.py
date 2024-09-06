@@ -207,7 +207,6 @@ class DataTrainingArguments:
             )
         },
     )
-    streaming: bool = field(default=False, metadata={"help": "Enable streaming mode"})
     block_size: Optional[int] = field(
         default=None,
         metadata={
@@ -236,8 +235,6 @@ class DataTrainingArguments:
     )
 
     def __post_init__(self):
-        if self.streaming:
-            require_version("datasets>=2.0.0", "The streaming feature requires `datasets>=2.0.0`")
 
         if self.dataset_name is None and self.train_file is None and self.validation_file is None:
             raise ValueError("Need either a dataset name or a training/validation file.")
@@ -335,7 +332,7 @@ def main():
             data_args.dataset_config_name,
             cache_dir=model_args.cache_dir,
             token=model_args.token,
-            streaming=data_args.streaming,
+            streaming=False,
         )
         if "validation" not in raw_datasets.keys():
             raw_datasets["validation"] = load_dataset(
@@ -344,7 +341,7 @@ def main():
                 split=f"train[:{data_args.validation_split_percentage}%]",
                 cache_dir=model_args.cache_dir,
                 token=model_args.token,
-                streaming=data_args.streaming,
+                streaming=False,
             )
             raw_datasets["train"] = load_dataset(
                 data_args.dataset_name,
@@ -352,47 +349,7 @@ def main():
                 split=f"train[{data_args.validation_split_percentage}%:]",
                 cache_dir=model_args.cache_dir,
                 token=model_args.token,
-                streaming=data_args.streaming,
-            )
-    else:
-        data_files = {}
-        dataset_args = {}
-        if data_args.train_file is not None:
-            data_files["train"] = data_args.train_file
-        if data_args.validation_file is not None:
-            data_files["validation"] = data_args.validation_file
-        extension = (
-            data_args.train_file.split(".")[-1]
-            if data_args.train_file is not None
-            else data_args.validation_file.split(".")[-1]
-        )
-        if extension == "txt":
-            extension = "text"
-            dataset_args["keep_linebreaks"] = data_args.keep_linebreaks
-        raw_datasets = load_dataset(
-            extension,
-            data_files=data_files,
-            cache_dir=model_args.cache_dir,
-            token=model_args.token,
-            **dataset_args,
-        )
-        # If no validation data is there, validation_split_percentage will be used to divide the dataset.
-        if "validation" not in raw_datasets.keys():
-            raw_datasets["validation"] = load_dataset(
-                extension,
-                data_files=data_files,
-                split=f"train[:{data_args.validation_split_percentage}%]",
-                cache_dir=model_args.cache_dir,
-                token=model_args.token,
-                **dataset_args,
-            )
-            raw_datasets["train"] = load_dataset(
-                extension,
-                data_files=data_files,
-                split=f"train[{data_args.validation_split_percentage}%:]",
-                cache_dir=model_args.cache_dir,
-                token=model_args.token,
-                **dataset_args,
+                streaming=False,
             )
 
     # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
@@ -412,15 +369,8 @@ def main():
     }
     if model_args.config_name:
         config = AutoConfig.from_pretrained(model_args.config_name, **config_kwargs)
-    elif model_args.model_name_or_path:
-        config = AutoConfig.from_pretrained(model_args.model_name_or_path, **config_kwargs)
     else:
-        config = CONFIG_MAPPING[model_args.model_type]()
-        logger.warning("You are instantiating a new config instance from scratch.")
-        if model_args.config_overrides is not None:
-            logger.info(f"Overriding config: {model_args.config_overrides}")
-            config.update_from_string(model_args.config_overrides)
-            logger.info(f"New config: {config}")
+        raise ValueError("expected config_name flag.")
 
     tokenizer_kwargs = {
         "cache_dir": model_args.cache_dir,
@@ -443,22 +393,7 @@ def main():
     config.flash_attention = model_args.flash_attention
 
     if model_args.model_name_or_path:
-        torch_dtype = (
-            model_args.torch_dtype
-            if model_args.torch_dtype in ["auto", None]
-            else getattr(torch, model_args.torch_dtype)
-        )
-        model = AutoModelForCausalLM.from_pretrained(
-            model_args.model_name_or_path,
-            from_tf=bool(".ckpt" in model_args.model_name_or_path),
-            config=config,
-            cache_dir=model_args.cache_dir,
-            revision=model_args.model_revision,
-            token=model_args.token,
-            trust_remote_code=model_args.trust_remote_code,
-            torch_dtype=torch_dtype,
-            low_cpu_mem_usage=model_args.low_cpu_mem_usage,
-        )
+        raise ValueError("This script has only been tested with model config.")
     else:
         model = AutoModelForCausalLM.from_config(config, trust_remote_code=model_args.trust_remote_code)
         # Set the model dtype since we can no longer rely on USE_XLA_BF16.
@@ -496,22 +431,16 @@ def main():
         return output
 
     # with training_args.main_process_first(desc="dataset map tokenization"):
-    if True:
-        if not data_args.streaming:
-            tokenized_datasets = raw_datasets.map(
-                tokenize_function,
-                batched=True,
-                num_proc=data_args.preprocessing_num_workers,
-                remove_columns=column_names,
-                load_from_cache_file=not data_args.overwrite_cache,
-                desc="Running tokenizer on dataset",
-            )
-        else:
-            tokenized_datasets = raw_datasets.map(
-                tokenize_function,
-                batched=True,
-                remove_columns=column_names,
-            )
+    tokenized_datasets = raw_datasets.map(
+        tokenize_function,
+        batched=True,
+        num_proc=data_args.preprocessing_num_workers,
+        remove_columns=column_names,
+        load_from_cache_file=not data_args.overwrite_cache,
+        desc="Running tokenizer on dataset",
+    )
+    import pdb; pdb.set_trace()
+
     if hasattr(config, "max_position_embeddings"):
         max_pos_embeddings = config.max_position_embeddings
     else:
@@ -561,20 +490,14 @@ def main():
     # https://huggingface.co/docs/datasets/process#map
 
     # with training_args.main_process_first(desc="grouping texts together"):
-    if True:
-        if not data_args.streaming:
-            lm_datasets = tokenized_datasets.map(
-                group_texts,
-                batched=True,
-                num_proc=data_args.preprocessing_num_workers,
-                load_from_cache_file=not data_args.overwrite_cache,
-                desc=f"Grouping texts in chunks of {block_size}",
-            )
-        else:
-            lm_datasets = tokenized_datasets.map(
-                group_texts,
-                batched=True,
-            )
+    lm_datasets = tokenized_datasets.map(
+        group_texts,
+        batched=True,
+        num_proc=data_args.preprocessing_num_workers,
+        load_from_cache_file=not data_args.overwrite_cache,
+        desc=f"Grouping texts in chunks of {block_size}",
+    )
+    import pdb; pdb.set_trace()
 
     if training_args.do_train:
         if "train" not in tokenized_datasets:
@@ -584,44 +507,14 @@ def main():
             max_train_samples = min(len(train_dataset), data_args.max_train_samples)
             train_dataset = train_dataset.select(range(max_train_samples))
 
-    if training_args.do_eval:
-        if "validation" not in tokenized_datasets:
-            raise ValueError("--do_eval requires a validation dataset")
-        eval_dataset = lm_datasets["validation"]
-        if data_args.max_eval_samples is not None:
-            max_eval_samples = min(len(eval_dataset), data_args.max_eval_samples)
-            eval_dataset = eval_dataset.select(range(max_eval_samples))
-
-        def preprocess_logits_for_metrics(logits, labels):
-            if isinstance(logits, tuple):
-                # Depending on the model and config, logits may contain extra tensors,
-                # like past_key_values, but logits always come first
-                logits = logits[0]
-            return logits.argmax(dim=-1)
-
-        metric = evaluate.load("accuracy", cache_dir=model_args.cache_dir)
-
-        def compute_metrics(eval_preds):
-            preds, labels = eval_preds
-            # preds have the same shape as the labels, after the argmax(-1) has been calculated
-            # by preprocess_logits_for_metrics but we need to shift the labels
-            labels = labels[:, 1:].reshape(-1)
-            preds = preds[:, :-1].reshape(-1)
-            return metric.compute(predictions=preds, references=labels)
-
     # Initialize our Trainer
     trainer = Trainer(
         model=model,
         args=training_args,
-        train_dataset=train_dataset if training_args.do_train else None,
-        eval_dataset=eval_dataset if training_args.do_eval else None,
+        train_dataset=train_dataset,
         tokenizer=tokenizer,
         # Data collator will default to DataCollatorWithPadding, so we change it.
         data_collator=default_data_collator,
-        compute_metrics=compute_metrics if training_args.do_eval and not is_torch_xla_available() else None,
-        preprocess_logits_for_metrics=preprocess_logits_for_metrics
-        if training_args.do_eval and not is_torch_xla_available()
-        else None,
     )
 
     # Training
@@ -645,23 +538,6 @@ def main():
         trainer.save_metrics("train", metrics)
         trainer.save_state()
 
-    # Evaluation
-    if training_args.do_eval:
-        logger.info("*** Evaluate ***")
-
-        metrics = trainer.evaluate()
-
-        max_eval_samples = data_args.max_eval_samples if data_args.max_eval_samples is not None else len(eval_dataset)
-        metrics["eval_samples"] = min(max_eval_samples, len(eval_dataset))
-        try:
-            perplexity = math.exp(metrics["eval_loss"])
-        except OverflowError:
-            perplexity = float("inf")
-        metrics["perplexity"] = perplexity
-
-        trainer.log_metrics("eval", metrics)
-        trainer.save_metrics("eval", metrics)
-
     kwargs = {"finetuned_from": model_args.model_name_or_path, "tasks": "text-generation"}
     if data_args.dataset_name is not None:
         kwargs["dataset_tags"] = data_args.dataset_name
@@ -671,10 +547,7 @@ def main():
         else:
             kwargs["dataset"] = data_args.dataset_name
 
-    if training_args.push_to_hub:
-        trainer.push_to_hub(**kwargs)
-    else:
-        trainer.create_model_card(**kwargs)
+    trainer.create_model_card(**kwargs)
 
 
 def _mp_fn(index):
