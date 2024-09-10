@@ -54,7 +54,7 @@ from .configuration_llama import LlamaConfig
 if is_flash_attn_2_available():
     from flash_attn import flash_attn_func, flash_attn_varlen_func
     from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input  # noqa
-
+import torch_xla.debug.profiler as xp
 
 logger = logging.get_logger(__name__)
 
@@ -219,6 +219,7 @@ class LlamaMLP(nn.Module):
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[config.hidden_act]
 
+    @xp.trace_me("mlp.forward")
     def forward(self, x):
         if self.config.pretraining_tp > 1:
             slice = self.intermediate_size // self.config.pretraining_tp
@@ -423,6 +424,7 @@ class LlamaFlashAttention2(LlamaAttention):
         # Beware that with flash_attn<2.1, using q_seqlen != k_seqlen (except for the case q_seqlen == 1) produces a wrong mask (top-left).
         self._flash_attn_uses_top_left_mask = not is_flash_attn_greater_or_equal_2_10()
 
+    @xp.trace_me("attention")
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -709,6 +711,7 @@ class LlamaDecoderLayer(nn.Module):
         self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
+    @xp.trace_me("decoder_layer.forward")
     def forward(
         self,
         hidden_states: torch.Tensor,

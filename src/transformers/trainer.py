@@ -2275,7 +2275,8 @@ class Trainer:
                             grad_norm = _grad_norm
 
                     # Optimizer step
-                    self.optimizer.step()
+                    with xp.Trace("optimizer step"):
+                        self.optimizer.step()
                     optimizer_was_run = not self.accelerator.optimizer_step_was_skipped
                     if optimizer_was_run:
                         # Delay optimizer scheduling until metrics are generated
@@ -3164,7 +3165,8 @@ class Trainer:
             with amp.scale_loss(loss, self.optimizer) as scaled_loss:
                 scaled_loss.backward()
         else:
-            self.accelerator.backward(loss)
+            with xp.Trace("model.backward"):
+                self.accelerator.backward(loss)
 
         return loss.detach() / self.args.gradient_accumulation_steps
 
@@ -3178,7 +3180,8 @@ class Trainer:
             labels = inputs.pop("labels")
         else:
             labels = None
-        outputs = model(**inputs)
+        with xp.Trace("model.forward"):
+            outputs = model(**inputs)
         # Save past state if it exists
         # TODO: this needs to be fixed and made cleaner later.
         if self.args.past_index >= 0:
