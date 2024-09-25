@@ -318,6 +318,7 @@ class LlamaAttention(nn.Module):
             else:
                 raise ValueError(f"Unknown RoPE scaling type {scaling_type}")
 
+    @xp.trace_me("flash_attention")
     def forward(
         self,
         hidden_states: torch.Tensor,
