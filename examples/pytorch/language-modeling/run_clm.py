@@ -439,7 +439,6 @@ def main():
         load_from_cache_file=not data_args.overwrite_cache,
         desc="Running tokenizer on dataset",
     )
-    import pdb; pdb.set_trace()
 
     if hasattr(config, "max_position_embeddings"):
         max_pos_embeddings = config.max_position_embeddings
@@ -497,7 +496,6 @@ def main():
         load_from_cache_file=not data_args.overwrite_cache,
         desc=f"Grouping texts in chunks of {block_size}",
     )
-    import pdb; pdb.set_trace()
 
     if training_args.do_train:
         if "train" not in tokenized_datasets:
@@ -525,8 +523,6 @@ def main():
         elif last_checkpoint is not None:
             checkpoint = last_checkpoint
         train_result = trainer.train(resume_from_checkpoint=checkpoint)
-        trainer.save_model()  # Saves the tokenizer too for easy upload
-
         metrics = train_result.metrics
 
         max_train_samples = (
@@ -538,22 +534,16 @@ def main():
         trainer.save_metrics("train", metrics)
         trainer.save_state()
 
-    kwargs = {"finetuned_from": model_args.model_name_or_path, "tasks": "text-generation"}
-    if data_args.dataset_name is not None:
-        kwargs["dataset_tags"] = data_args.dataset_name
-        if data_args.dataset_config_name is not None:
-            kwargs["dataset_args"] = data_args.dataset_config_name
-            kwargs["dataset"] = f"{data_args.dataset_name} {data_args.dataset_config_name}"
-        else:
-            kwargs["dataset"] = data_args.dataset_name
+    # kwargs = {"finetuned_from": model_args.model_name_or_path, "tasks": "text-generation"}
+    # if data_args.dataset_name is not None:
+    #     kwargs["dataset_tags"] = data_args.dataset_name
+    #     if data_args.dataset_config_name is not None:
+    #         kwargs["dataset_args"] = data_args.dataset_config_name
+    #         kwargs["dataset"] = f"{data_args.dataset_name} {data_args.dataset_config_name}"
+    #     else:
+    #         kwargs["dataset"] = data_args.dataset_name
 
-    trainer.create_model_card(**kwargs)
-
-
-def _mp_fn(index):
-    # For xla_spawn (TPUs)
-    main()
-
+    # trainer.create_model_card(**kwargs)
 
 if __name__ == "__main__":
     main()

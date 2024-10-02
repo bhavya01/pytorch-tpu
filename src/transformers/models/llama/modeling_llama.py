@@ -995,7 +995,8 @@ class LlamaModel(LlamaPreTrainedModel):
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
 
-        causal_mask = self._update_causal_mask(attention_mask, inputs_embeds, cache_position, past_seen_tokens)
+        # causal_mask = self._update_causal_mask(attention_mask, inputs_embeds, cache_position, past_seen_tokens)
+        causal_mask = None
 
         # embed positions
         hidden_states = inputs_embeds
@@ -1101,12 +1102,15 @@ class LlamaModel(LlamaPreTrainedModel):
             causal_mask = torch.triu(causal_mask, diagonal=1)
         causal_mask *= torch.arange(target_length, device=device) > cache_position.reshape(-1, 1)
         causal_mask = causal_mask[None, None, :, :].expand(input_tensor.shape[0], 1, -1, -1)
+        final_causal_mask = None
         if attention_mask is not None:
             causal_mask = causal_mask.clone()  # copy to contiguous memory for in-place edit
             if attention_mask.dim() == 2:
                 mask_length = attention_mask.shape[-1]
-                padding_mask = causal_mask[..., :mask_length].eq(0.0) * attention_mask[:, None, None, :].eq(0.0)
-                causal_mask[..., :mask_length] = causal_mask[..., :mask_length].masked_fill(padding_mask, min_dtype)
+                causal_mask_equal_zero = causal_mask[:, :, :, :mask_length].eq(0.0)
+                attention_mask_equal_zero = attention_mask.unsqueeze(1).unsqueeze(1).eq(0.0)
+                padding_mask = causal_mask_equal_zero * attention_mask_equal_zero
+                final_causal_mask = causal_mask[:, :, :, :mask_length].masked_fill(padding_mask, min_dtype)
             elif attention_mask.dim() == 4:
                 # backwards compatibility: we allow passing a 4D attention mask shorter than the input length with
                 # cache. In that case, the 4D attention mask attends to the newest tokens only.
@@ -1120,17 +1124,7 @@ class LlamaModel(LlamaPreTrainedModel):
                     : mask_shape[0], : mask_shape[1], offset : mask_shape[2] + offset, : mask_shape[3]
                 ] = mask_slice
 
-        if (
-            self.config._attn_implementation == "sdpa"
-            and attention_mask is not None
-            and attention_mask.device.type == "cuda"
-        ):
-            # Attend to all tokens in fully masked rows in the causal_mask, for example the relevant first rows when
-            # using left padding. This is required by F.scaled_dot_product_attention memory-efficient attention path.
-            # Details: https://github.com/pytorch/pytorch/issues/110213
-            causal_mask = AttentionMaskConverter._unmask_unattended(causal_mask, min_dtype)
-
-        return causal_mask
+        return final_causal_mask
 
 
 class LlamaForCausalLM(LlamaPreTrainedModel):
