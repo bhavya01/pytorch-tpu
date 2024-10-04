@@ -325,7 +325,6 @@ class Trainer:
         optimizers: Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LambdaLR] = (None, None),
         preprocess_logits_for_metrics: Optional[Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = None,
     ):
-        import pdb; pdb.set_trace()
         self.args = args
         # Seed must be set before instantiating the model when using model
         set_seed(self.args.seed)
@@ -500,7 +499,6 @@ class Trainer:
         """
         if self.train_dataset is None:
             raise ValueError("Trainer: training requires a train_dataset.")
-        import pdb; pdb.set_trace()
         train_dataset = self.train_dataset
         data_collator = self.data_collator
         
@@ -831,15 +829,6 @@ class Trainer:
                     reshard_after_forward=False,
                     **fsdp_kwargs,
                 )
-            import pdb; pdb.set_trace()
-            # Patch `xm.optimizer_step` should not reduce gradients in this case,
-            # as FSDP does not need gradient reduction over sharded parameters.
-            def patched_optimizer_step(optimizer, barrier=False, optimizer_args={}):
-                loss = optimizer.step(**optimizer_args)
-                if barrier:
-                    xm.mark_step()
-                return loss
-            xm.optimizer_step = patched_optimizer_step
         return model
 
     def train(
@@ -932,8 +921,6 @@ class Trainer:
         # this is for unhandled cases such as
         # FSDP-XLA, SageMaker MP/DP, DataParallel, IPEX
         use_accelerator_prepare = True if model is self.model else False
-
-        import pdb; pdb.set_trace()
         self.model = self.model.to(self.accelerator.device)
         # if use_accelerator_prepare:
         #     self.model = self.accelerator.prepare(self.model)
@@ -942,7 +929,6 @@ class Trainer:
 
         # prepare using `accelerator` prepare
         if use_accelerator_prepare:
-            import pdb; pdb.set_trace()
             # This is interesting. Moves optimizer state dict to device and syncs gradients manually?
             self.model.train()
             if hasattr(self.lr_scheduler, "step"):
@@ -968,7 +954,6 @@ class Trainer:
         logger.info(f"  Total optimization steps = {max_steps:,}")
         logger.info(f"  Number of trainable parameters = {get_model_param_count(model, trainable_only=True):,}")
 
-        import pdb; pdb.set_trace()
         self.state.epoch = 0
         start_time = time.time()
         epochs_trained = 0
@@ -1059,7 +1044,6 @@ class Trainer:
                         xm.mark_step()
                     break
 
-            import pdb; pdb.set_trace()
             self.control = self.callback_handler.on_epoch_end(args, self.state, self.control)
             if self.control.should_training_stop:
                 break
@@ -1136,7 +1120,6 @@ class Trainer:
 
         Subclass and override for custom behavior.
         """
-        import pdb; pdb.set_trace()
         outputs = model(**inputs)
         loss = outputs["loss"]
         return loss
