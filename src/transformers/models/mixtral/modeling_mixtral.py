@@ -917,12 +917,12 @@ class Gmm(torch.autograd.Function):
 
         # Replicated MixtralBlockSparseTop2MLP.forward
         # Here we just use silu and ignore the configuration given we need to manually write the backward pass.
-        gmm1 = gmm(hidden_states_sorted, w1, group_sizes)
-        gmm3 =  gmm(hidden_states_sorted, w3, group_sizes)
+        gmm1 = gmm(hidden_states_sorted, w1, group_sizes, tiling=(512, 1024, 1024))
+        gmm3 =  gmm(hidden_states_sorted, w3, group_sizes, tiling=(512, 1024, 1024))
          # Should I save silu activations?
         silu = F.silu(gmm1)
         sgmm = silu * gmm3
-        gmm2 = gmm(sgmm, w2, group_sizes)
+        gmm2 = gmm(sgmm, w2, group_sizes, tiling=(512, 1024, 1024))
         current_hidden_states = gmm2[hidden_states_reverse_order].reshape(-1, k, n)
 
         # Exit manual sharding zone
