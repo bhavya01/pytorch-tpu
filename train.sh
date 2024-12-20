@@ -10,7 +10,7 @@ export PROFILE_LOGDIR=gs://bbahl/llama-det/
 python3 examples/pytorch/language-modeling/run_clm.py \
   --dataset_name wikitext \
   --dataset_config_name wikitext-2-raw-v1 \
-  --per_device_train_batch_size 32 \
+  --per_device_train_batch_size 128 \
   --do_train \
   --output_dir /home/$USER/tmp/test-clm \
   --overwrite_output_dir \
@@ -24,4 +24,5 @@ python3 examples/pytorch/language-modeling/run_clm.py \
   --torch_dtype bfloat16 \
   --dataloader_drop_last yes \
   --flash_attention \
-  --max_steps 10
+  --max_steps 10 \
+  --gradient_accumulation_steps 4
