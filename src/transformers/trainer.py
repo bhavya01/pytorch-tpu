@@ -1892,8 +1892,8 @@ class Trainer:
         logger.debug(f"Currently training with a batch size of: {self._train_batch_size}")
         # Data loader and number of training steps
         train_dataloader = self.get_train_dataloader()
-        if self.is_fsdp_xla_v2_enabled:
-            train_dataloader = tpu_spmd_dataloader(train_dataloader)
+        # if self.is_fsdp_xla_v2_enabled:
+        train_dataloader = tpu_spmd_dataloader(train_dataloader)
 
         # Setting up training control variables:
         # number of training epochs: num_train_epochs
@@ -2277,6 +2277,8 @@ class Trainer:
                     # Optimizer step
                     with xp.Trace("optimizer step"):
                         self.optimizer.step()
+
+                    logger.info(f"Training loss at {self.state.global_step}: {tr_loss_step}")
                     optimizer_was_run = not self.accelerator.optimizer_step_was_skipped
                     if optimizer_was_run:
                         # Delay optimizer scheduling until metrics are generated

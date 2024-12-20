@@ -28,7 +28,8 @@ def tpu_spmd_dataloader(dataloader: DataLoader):
         # This is to support PyTorch/XLA FSDP via SPMD.
         # Here we shard the input data's 0th dim across the fsdp axis.
         import torch_xla.distributed.spmd as xs
-
+        mesh = xs.get_1d_mesh('fsdp')
+        xs.set_global_mesh(mesh)
         sharding_spec = xs.ShardingSpec(xs.get_global_mesh(), ("fsdp", None))
         dataloader._parallel_loader_kwargs["input_sharding"] = sharding_spec
         return dataloader
