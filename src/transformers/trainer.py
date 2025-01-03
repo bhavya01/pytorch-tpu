@@ -842,7 +842,7 @@ class Trainer:
             )
 
         else:
-            return RandomSampler(self.train_dataset)
+            return SequentialSampler(self.train_dataset)
 
     def get_train_dataloader(self) -> DataLoader:
         """
@@ -2211,8 +2211,8 @@ class Trainer:
                 if step % args.gradient_accumulation_steps == 0:
                     self.control = self.callback_handler.on_step_begin(args, self.state, self.control)
 
-                with self.accelerator.accumulate(model):
-                    tr_loss_step = self.training_step(model, inputs)
+                # with self.accelerator.accumulate(model):
+                tr_loss_step = self.training_step(model, inputs)
 
                 if (
                     args.logging_nan_inf_filter
@@ -3168,7 +3168,7 @@ class Trainer:
                 scaled_loss.backward()
         else:
             with xp.Trace("model.backward"):
-                self.accelerator.backward(loss)
+                loss.backward()
 
         return loss.detach() / self.args.gradient_accumulation_steps
 

@@ -1,4 +1,4 @@
-sudo pip3 install -e .
+pip3 install -e .
 pip3 install datasets
 pip3 install evaluate
 pip3 install scikit-learn
